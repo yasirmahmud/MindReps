@@ -40,6 +40,13 @@ async function fill(id:string,value:string) {
   });
 }
 async function submitForm() { await act(async()=>{host.querySelector('form')!.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));}); }
+async function writeResponse(id:string,value:string) {
+  const input=host.querySelector<HTMLTextAreaElement>(`#${id}`)!;
+  await act(async()=>{
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype,'value')!.set!.call(input,value);
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+  });
+}
 
 beforeEach(()=>{
   vi.resetAllMocks();
@@ -56,6 +63,79 @@ beforeEach(()=>{
 afterEach(async()=>{await act(async()=>root.unmount());host.remove();vi.restoreAllMocks();});
 
 describe('workspace auth and cloud lifecycle',()=>{
+  it('uses written questions for the main practice entry and topic sessions',async()=>{
+    await render();await click('Start a session');
+    let saved=cloud.saveProgress.mock.calls.at(-1)![1];
+    expect(saved.session.queue.every((id:string)=>questions.find(q=>q.id===id)?.interview)).toBe(true);
+    expect(host.querySelector('.answer-options')).toBeNull();
+    await click('End session');await click('Overview','.sidebar button');
+    await click('SystemVerilog & RTL','.topic-card');
+    saved=cloud.saveProgress.mock.calls.at(-1)![1];
+    expect(saved.session.queue).toEqual(['sv-11','sv-12']);
+  });
+  it('commits a written response before revealing teaching, saves gaps and a separate improved answer',async()=>{
+    cloud.loadProgress.mockResolvedValue(row(1));await render();await click('Start interview practice');
+    expect(host.querySelector('.answer-options')).toBeNull();
+    expect(host.textContent).not.toContain('Start with the fundamentals');
+    expect(button('Commit answer').disabled).toBe(true);
+    await writeResponse('interview-response','It becomes 3 because both operations cancel.');
+    await click('Save draft');
+    const draft=cloud.saveProgress.mock.calls.at(-1)![1];
+    expect(draft.session.response).toContain('becomes 3');
+    await click('Overview','.sidebar button');await click('Continue practice');
+    expect(host.querySelector<HTMLTextAreaElement>('#interview-response')?.value).toContain('becomes 3');
+    await click('Commit answer');
+    expect(host.querySelector('#interview-response')).toBeNull();
+    expect(host.textContent).toContain('Start with the fundamentals');
+    expect(host.textContent).toContain('The settled count is 2');
+    expect(host.textContent).toContain('Common mistakes and how to fix them');
+    await click('Save self-review');
+    expect(host.textContent).toContain('Needs more work.');
+    expect(host.textContent).toContain('Focus your rewrite on these gaps');
+    await writeResponse('improved-response','Both RHS use old count; the later update wins, producing 2.');
+    await click('Save improved answer');
+    const saved=cloud.saveProgress.mock.calls.at(-1)![1];
+    expect(saved.attempts[0]).toMatchObject({response:'It becomes 3 because both operations cancel.',revision:'Both RHS use old count; the later update wins, producing 2.',correct:false,assessment:'self'});
+    await click('Finish session');expect(host.textContent).toContain('1 self-reviewed');
+    await click('Go to review');await click('Start review');
+    expect(host.querySelector<HTMLTextAreaElement>('#interview-response')?.value).toBe('');
+    expect(host.textContent).not.toContain('The settled count is 2');
+    await writeResponse('interview-response','A complete independent retry with code and boundary cases.');
+    await click('Commit answer');
+    for(const checkbox of host.querySelectorAll<HTMLInputElement>('input[type=checkbox]')) await act(async()=>checkbox.click());
+    await click('Save self-review');expect(host.textContent).toContain('Self-assessed: all essential points met.');
+    expect(cloud.saveProgress.mock.calls.at(-1)![1].attempts.at(-1).xp).toBe(10);
+    await click('Finish session');await click('Go to review');expect(host.textContent).toContain('A clean slate.');
+    await click('Progress','.sidebar button');
+    expect(host.textContent).toContain('0 / 0 automatic · 1 self-reviews');
+  });
+  it('reveals no solution until a failed commit is confirmed by cloud retry',async()=>{
+    await render();await click('Start interview practice');
+    await writeResponse('interview-response','My committed reasoning.');
+    cloud.saveProgress.mockRejectedValueOnce(Error('Network disconnected'));
+    await click('Commit answer');
+    expect(host.textContent).not.toContain('Start with the fundamentals');
+    expect(button('Commit answer').disabled).toBe(true);
+    const pending=cloud.saveProgress.mock.calls.at(-1)![1];
+    await click('Retry save');
+    expect(cloud.saveProgress.mock.calls.at(-1)![1]).toBe(pending);
+    expect(host.textContent).toContain('Start with the fundamentals');
+  });
+  it('keeps an unsaved written draft through visibility events and retains stale-device protection',async()=>{
+    await render();await click('Start interview practice');
+    await writeResponse('interview-response','Unsaved work must survive a refresh event.');
+    const loads=cloud.loadProgress.mock.calls.length;
+    await act(async()=>document.dispatchEvent(new Event('visibilitychange')));
+    expect(cloud.loadProgress).toHaveBeenCalledTimes(loads);
+    expect(host.querySelector<HTMLTextAreaElement>('#interview-response')?.value).toContain('Unsaved work');
+    const unload=new Event('beforeunload',{cancelable:true});
+    await act(async()=>window.dispatchEvent(unload));expect(unload.defaultPrevented).toBe(true);
+    cloud.saveProgress.mockRejectedValueOnce(Error('Progress changed on another device. Reload cloud progress.'));
+    await click('Save draft');
+    expect(host.textContent).toContain('Progress changed on another device');
+    expect(host.querySelector<HTMLTextAreaElement>('#interview-response')?.value).toContain('Unsaved work');
+    expect(button('Commit answer').disabled).toBe(true);
+  });
   it('requests a default email link without signing up a user or requiring a code',async()=>{
     cloud.getSession.mockResolvedValue({data:{session:null},error:null});await render();
     await fill('email','owner@example.com');await submitForm();
@@ -107,7 +187,8 @@ describe('workspace auth and cloud lifecycle',()=>{
     await click('Start a session');expect(cloud.saveProgress.mock.calls[0][1].session.queue).toHaveLength(5);
   });
   it('keeps the confirmed answer until retry succeeds, reusing its mutation ID',async()=>{
-    await render();await click('Start a session');await click('a = 0, b = 1');
+    cloud.loadProgress.mockResolvedValue({revision:3,payload:startSession(emptyProgress(),'new')});
+    await render();await click('Continue practice');await click('a = 0, b = 1');
     cloud.saveProgress.mockRejectedValueOnce(Error('Network disconnected'));
     await click('Check answer');
     expect(host.textContent).not.toContain('Exactly. Here’s the reasoning.');
@@ -141,7 +222,7 @@ describe('workspace auth and cloud lifecycle',()=>{
     expect(host.textContent).toContain('Welcome to your next level');
   });
   it('finishes an incorrect session, recovers through review, and keeps first-try accuracy',async()=>{
-    cloud.loadProgress.mockResolvedValue(row(1));await render();await click('Start a session');
+    cloud.loadProgress.mockResolvedValue({revision:3,payload:startSession({...emptyProgress(),goal:1},'new')});await render();await click('Continue practice');
     await click('a = 1, b = 1');await click('Check answer');
     expect(host.textContent).toContain('A useful mistake.');await click('Finish session');
     expect(host.textContent).toContain('0 of 1 answered correctly');expect(host.textContent).toContain('5 XP');
@@ -154,7 +235,8 @@ describe('workspace auth and cloud lifecycle',()=>{
     expect(host.querySelectorAll('.stat-value')[1].textContent).toBe('0%');
   });
   it('discards a failed selection when explicitly reloading newer cloud progress',async()=>{
-    await render();await click('Start a session');
+    cloud.loadProgress.mockResolvedValue({revision:3,payload:startSession(emptyProgress(),'new')});
+    await render();await click('Continue practice');
     cloud.saveProgress.mockRejectedValueOnce(Error('Progress changed on another device'));
     await click('a = 0, b = 1');
     const newer=startSession({...emptyProgress(),goal:5},'new','cdc');
@@ -174,7 +256,7 @@ describe('workspace auth and cloud lifecycle',()=>{
   it('resets in-memory preview progress when exiting and re-entering',async()=>{
     cloud.configured=false;cloud.getSession.mockResolvedValue({data:{session:null},error:null});
     await render();await click('Explore the interactive preview');await click('Start a session');
-    await click('a = 0, b = 1');await click('Check answer');await click('Setup');
+    await writeResponse('interview-response','Preview response.');await click('Commit answer');await click('Save self-review');await click('Setup');
     await click('Explore the interactive preview');
     expect(host.querySelectorAll('.stat-value')[0].textContent).toBe('0');
     expect(host.textContent).not.toContain('Continue practice');

@@ -1,8 +1,10 @@
+import { interviewQuestions, type InterviewChallenge } from './interviewContent';
 export type TopicId = 'sv' | 'sva' | 'uvm' | 'cdc' | 'arch' | 'debug';
 export type Question = {
   id: string; topic: TopicId; level: 'Intermediate' | 'Advanced'; title: string;
   prompt: string; code?: string; options: { text: string; why: string }[];
   correct: number[]; lesson: string;
+  interview?: InterviewChallenge;
 };
 export const topics: { id: TopicId; name: string; short: string; description: string; color: string }[] = [
   { id: 'sv', name: 'SystemVerilog & RTL', short: 'SystemVerilog', description: 'Scheduling, sizing, and the hardware behind the code.', color: 'sage' },
@@ -380,6 +382,7 @@ export const questions: Question[] = [
     ['A coverage exclusion for reset collisions','The collision is legal if the specification permits it, so it should remain tested.'],
     ['A comment saying the FIFO is now correct','A comment does not execute or establish correctness.']
   ],[0],'A useful regression test captures the violated requirement, not just the accidental details of one failing run.'),
+  ...interviewQuestions,
 ];
 export const reading = [
   { name: 'lowRISC RTL style guide', note: 'RTL coding conventions and common semantic traps', url: 'https://github.com/lowRISC/style-guides/blob/master/VerilogCodingStyle.md' },

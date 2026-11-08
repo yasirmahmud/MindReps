@@ -1,16 +1,18 @@
 import { describe, it, expect } from 'vitest';
 import { questions, topics } from './content';
-import { advance, answer, emptyProgress, firstAttempts, grade, localDay, newQueue, parseProgress, previousDay, reviewQueue, startSession, statistics, type Progress } from './domain';
+import { assessInterview, reviseInterview, saveInterviewDraft, advance, answer, emptyProgress, firstAttempts, grade, localDay, newQueue, parseProgress, previousDay, reviewQueue, startSession, statistics, type Progress } from './domain';
 const at = (day: string) => new Date(`${day}T12:00:00`);
 function submit(p: Progress, selected: number[], day = '2026-11-06') {
   if (!p.session) throw Error('test requires session');
   return answer({ ...p, session: { ...p.session, selected } }, at(day));
 }
 describe('question bank integrity', () => {
-  it('has 60 unique, complete questions and 10 per topic', () => {
-    expect(questions).toHaveLength(60);
-    expect(new Set(questions.map(q=>q.id)).size).toBe(60);
-    for (const t of topics) expect(questions.filter(q=>q.topic===t.id)).toHaveLength(10);
+  it('has 70 unique complete questions, including ten written interview challenges', () => {
+    expect(questions).toHaveLength(70);
+    expect(new Set(questions.map(q=>q.id)).size).toBe(70);
+    const counts = {sv:12,sva:12,uvm:12,cdc:12,arch:11,debug:11};
+    for (const t of topics) expect(questions.filter(q=>q.topic===t.id)).toHaveLength(counts[t.id]);
+    expect(questions.filter(q=>q.interview)).toHaveLength(10);
     for (const q of questions) {
       expect(q.correct.length).toBeGreaterThan(0);
       expect(q.correct.length).toBeLessThan(q.options.length);
@@ -18,6 +20,15 @@ describe('question bank integrity', () => {
       expect(q.correct.every(i=>Number.isInteger(i)&&i>=0&&i<q.options.length)).toBe(true);
       expect(q.options.every(o=>o.text.trim().length>0&&o.why.length>15)).toBe(true);
       expect(q.lesson.length).toBeGreaterThan(40);
+      if(q.interview) {
+        expect(q.interview.steps.length).toBeGreaterThanOrEqual(4);
+        expect(q.interview.steps.every(s=>s.title && s.body.length>80)).toBe(true);
+        expect(q.interview.pitfalls.length).toBeGreaterThanOrEqual(2);
+        expect(q.interview.rubric).toHaveLength(4);
+        expect(q.interview.followUp.solution.length).toBeGreaterThan(100);
+        expect(q.interview.references.every(r=>r.url.startsWith('https://'))).toBe(true);
+        expect(q.interview.provenance).toMatch(/Original/);
+      }
     }
   });
   it('matches hand-traced RTL numerical results', () => {
@@ -26,6 +37,70 @@ describe('question bank integrity', () => {
       const q=questions.find(q=>q.id===id)!;
       expect(q.correct.map(i=>q.options[i].text)).toEqual([text]);
     }
+  });
+});
+
+describe('written interview practice',()=>{
+  const start=()=>startSession(emptyProgress(),'new','all','interview');
+  it('creates a written-only queue and preserves an existing legacy session',()=>{
+    const p=start();
+    expect(p.session?.queue).toHaveLength(10);
+    expect(p.session?.queue.every(id=>questions.find(q=>q.id===id)?.interview)).toBe(true);
+    const legacy=startSession(emptyProgress(),'new');
+    expect(startSession(legacy,'new','all','interview')).toBe(legacy);
+  });
+  it('locks a nonempty original response before rubric assessment and rejects the MCQ path',()=>{
+    const p=start();
+    expect(()=>saveInterviewDraft(p,'  ',true)).toThrow();
+    expect(()=>assessInterview(p,[0,1,2,3])).toThrow();
+    expect(()=>answer({...p,session:{...p.session!,selected:[1]}})).toThrow(/written response/);
+    const draft=saveInterviewDraft(p,'Trace, code, and assumptions.');
+    expect(parseProgress(JSON.parse(JSON.stringify(draft)))).toEqual(draft);
+    const revealed=saveInterviewDraft(draft,draft.session!.response!,true);
+    expect(saveInterviewDraft(revealed,'Replace the original')).toBe(revealed);
+    expect(parseProgress(JSON.parse(JSON.stringify(revealed)))).toEqual(revealed);
+  });
+  it('records a failed self-review even with zero rubric points, and retains a separate rewrite',()=>{
+    let p=saveInterviewDraft(start(),'My original attempt',true);
+    p=assessInterview(p,[],at('2026-11-06'));
+    expect(p.attempts[0]).toMatchObject({correct:false,selected:[0],assessment:'self',response:'My original attempt',rubric:[],xp:5});
+    expect(reviewQueue(p)).toEqual([p.session!.queue[0]]);
+    expect(assessInterview(p,[0,1,2,3])).toBe(p);
+    p=reviseInterview(p,'A stronger explanation');
+    expect(p.attempts[0]).toMatchObject({response:'My original attempt',revision:'A stronger explanation',correct:false});
+    expect(parseProgress(JSON.parse(JSON.stringify(p)))).toEqual(p);
+    const next=advance(p);
+    expect(next.session?.response).toBeUndefined();
+    expect(next.session?.solutionRevealed).toBeUndefined();
+  });
+  it('requires all rubric points, separates automatic accuracy, and preserves one-time recovery XP',()=>{
+    let p=assessInterview(saveInterviewDraft(start(),'First response',true),[0,1,2],at('2026-11-06'));
+    expect(statistics(p,at('2026-11-06'))).toMatchObject({accuracy:null,selfAssessed:1,completed:1});
+    p=startSession({...p,session:null},'review');
+    p=assessInterview(saveInterviewDraft(p,'Complete retry response',true),[3,2,1,0],at('2026-11-06'));
+    expect(p.attempts.at(-1)?.xp).toBe(10);
+    expect(reviewQueue(p)).toEqual([]);
+    p=startSession({...p,session:null},'new','sv');
+    p=submit(p,[1]);
+    expect(statistics(p,at('2026-11-06'))).toMatchObject({accuracy:100,selfAssessed:1,completed:2,xp:35});
+  });
+  it('rejects malformed rubric, oversized responses, and inconsistent persisted assessments',()=>{
+    const p=saveInterviewDraft(start(),'Original',true);
+    for(const rubric of [[0,0],[4],[-1]]) expect(()=>assessInterview(p,rubric)).toThrow();
+    expect(()=>saveInterviewDraft(start(),'a'.repeat(12001))).toThrow();
+    const graded=assessInterview(p,[0,1,2,3]);
+    expect(()=>parseProgress({...graded,attempts:[{...graded.attempts[0],correct:false}]})).toThrow(/not been overwritten/);
+    expect(()=>parseProgress({...graded,session:{...graded.session,response:'changed'}})).toThrow(/not been overwritten/);
+  });
+  it('independently checks the authored pointer arithmetic and arbitration traces',()=>{
+    const gray=(n:number)=>n^(n>>>1);
+    expect(gray(8)).toBe(0b1100);
+    for(let r=0;r<16;r++) expect(gray((r+8)%16)).toBe(gray(r)^0b1100);
+    expect(gray(7)).toBe(0b0100);
+    let pointer=0;
+    const winners:number[]=[],after:number[]=[];
+    for(const ready of [0,0,1,1,1]) {winners.push(pointer);if(ready)pointer=(pointer+1)%4;after.push(pointer);}
+    expect(winners).toEqual([0,0,0,1,2]);expect(after).toEqual([0,0,1,2,3]);
   });
 });
 describe('learning progression', () => {

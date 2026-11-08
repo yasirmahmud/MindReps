@@ -96,6 +96,7 @@ Use your real Supabase project and deployed URL for these checks:
 
 - Sign in as the allowlisted owner; confirm a non-owner account cannot load or save progress.
 - Start topic and mixed sessions. Select an answer, reopen the app on another device, and confirm the same selection resumes. Submit, reopen, and confirm feedback resumes without adding a second answer or XP award.
+- Start interview practice. Save a written draft, then reopen on another device and confirm the text resumes. Commit the answer, reopen, and confirm the original remains locked and the solution is visible. Save a partial self-review and a separate improved answer; confirm both survive reload and export, with the original response and score unchanged. Verify failed-save retry and stale-device conflict handling for these writes too.
 - Give an incorrect answer, finish/end the session, and recover it in Review. Confirm the item clears, the first-attempt accuracy stays unchanged, and the recovery bonus is awarded once.
 - Complete a session, change the daily goal in Progress, and confirm the next session uses that goal. Export a JSON snapshot and inspect it.
 - With two tabs open, answer in the first, then try a change from the stale second tab. Confirm a conflict appears and **Reload cloud progress** restores the newer state. The discarded tab's failed change is not merged automatically.
